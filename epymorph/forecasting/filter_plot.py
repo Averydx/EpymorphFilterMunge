@@ -56,6 +56,7 @@ class PlotRendererFilter:
         self.output = output
 
     def _compute_quantile_range(self, credible_interval: float) -> list[float]:
+        """Computes the quantiles corresponding the a given credible interval."""
         exterior = (100.0 - credible_interval) / 2
         exterior = round(exterior, 1)
         return [0.0 + exterior, 100.0 - exterior]
@@ -136,7 +137,7 @@ class PlotRendererFilter:
 
     def spaghetti(
         self,
-        realizations: RealizationSelection,
+        realization: RealizationSelection,
         geo: GeoSelection | GeoAggregation,
         time: TimeSelection | TimeAggregation,
         quantity: QuantityStrategy | ParameterStrategy,
@@ -151,10 +152,85 @@ class PlotRendererFilter:
         to_file: str | Path | None = None,
         transform: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
     ) -> None:
-        if not isinstance(realizations, RealizationSelection):
+        """
+        Produces a spaghetti plot of a filter output. This is a plot where
+        each realization corresponds to a specific line on a plot.
+
+        Parameters
+        ----------
+        realization:
+            A realization selection to make on the output data,
+            you can either select all vthe realizations or a random subset.
+
+        geo :
+            The geographic selection to make on the output data.
+        time :
+            The time selection to make on the output data.
+        quantity :
+            The quantity selection to make on the output data.
+
+        sharex :
+            Whether or not the subplots should share the x-axis ticks.
+
+        ncols :
+            The number of columns in the resulting subplot matrix. The
+            number of rows is set dynamically.
+
+        line_kwargs :
+            A list of dictionaries of keyword arguments to be passed to the matplotlib
+            function that draws each line. Each dictionary corresponds
+            to a single quantity.
+            See matplotlib documentation for the supported options.
+
+        time_format :
+            Controls the formatting of the time axis (the horizontal axis);
+            "auto" will use the format defined by the grouping of the `time` parameter,
+            "date" attempts to display calendar dates,
+            "day" attempts to display days numerically indexed from the start of the
+            simulation with the first day being 0.
+            If the system cannot convert to the requested time format, this argument
+            may be ignored.
+
+        label_format :
+            A format for the items displayed in the legend;
+            the string will be used in a call to `format()`
+            with the replacement variable {q}` for the name of the quantity.
+        legend :
+            Whether and how to draw the plot legend.
+
+            - "auto" will draw the legend unless it would be too large
+            - "on" forces the legend to be drawn
+            - "off" forces the legend to not be drawn
+            - "outside" forces the legend to be drawn next to the plot area
+            (instead of inside it)
+
+        title :
+            A title to draw on the plot.
+        to_file :
+            Specify a path to save the plot to a file instead of calling `plt.show()`.
+        transform :
+            Allows you to specify an arbitrary transform function for the source
+            dataframe before we plot it, e.g., to rescale the values.
+            The function will be called once per geo/quantity group -- once per line,
+            essentially -- with a dataframe that contains just the data for that group.
+            The dataframe given as the argument is the result of applying
+            all selections and the projection if specified.
+            You should return a dataframe with the same format, where the
+            values of the data column have been modified for your purposes.
+
+            Dataframe columns:
+
+            - "time": the time series column
+            - "geo": the node ID (same value per group)
+            - "quantity": the label of the quantity (same value per group)
+            - "value": the data column
+        """
+
+        if not isinstance(realization, RealizationSelection):
             raise ValueError("Spaghetti plots only support RealizationSelection.")
 
         try:
+            # Initialize subplots and info
             num_nodes = self.output.rume.scope.nodes
             nrows = ceil(num_nodes / ncols)
             fig, axes = plt.subplots(
@@ -182,9 +258,10 @@ class PlotRendererFilter:
                 # auto: show a legend if there are at most 4 quantities.
                 legend = "on" if len(quantity.labels) <= 4 else "off"
 
+            # Call the spaghetti plot function, this returns the lines
             lines = self.spaghetti_plt(
                 axes,
-                realizations,
+                realization,
                 geo,
                 time,
                 quantity,
@@ -233,6 +310,7 @@ class PlotRendererFilter:
         # Before melting, disambiguate any quantities with the same name.
         q_mapping = quantity.disambiguate_groups()
 
+        # Group by geo location
         groups_df = data_df.set_axis(
             ["realization", "time", "geo", *q_mapping.keys()], axis=1
         ).groupby("geo")
@@ -252,8 +330,11 @@ class PlotRendererFilter:
                 id_vars=["realization", "time", "geo"], var_name="quantity"
             ).groupby("quantity")
 
+            # Line kwargs cycle over the quantity axis,
+            # not setting colors for individual lines!
             for (quantity_group_name, qdf), kwargs in zip(
-                quantity_groups, cycle(line_kwargs)
+                quantity_groups,
+                cycle(line_kwargs),  # type: ignore
             ):
                 q_name = q_mapping[quantity_group_name]  # type: ignore
                 label = label_format.format(q=q_name)
@@ -261,6 +342,7 @@ class PlotRendererFilter:
 
                 realization_groups = qdf.groupby("realization")
 
+                # Iterate over each realization and apply args
                 for realization_index, (realization_group_name, rdf) in enumerate(
                     realization_groups
                 ):
@@ -321,6 +403,72 @@ class PlotRendererFilter:
         to_file: str | Path | None = None,
         transform: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
     ):
+        """
+        Produces a quantile plot of a filter output. This is a plot where
+        each realization corresponds to a specific line on a plot.
+
+        Parameters
+        ----------
+        geo :
+            The geographic selection to make on the output data.
+        time :
+            The time selection to make on the output data.
+        quantity :
+            The quantity selection to make on the output data.
+        credible_intervals :
+            A list of credible intervals you wish to plot.
+            This argument only accepts CI's in 2.5% increments,
+            i.e. 2.5,5.0,7.5,...,97.5,100.0.
+        sharex :
+            Whether or not the subplots should share the x-axis ticks.
+        ncols :
+            The number of columns in the resulting subplot matrix. The
+        number of rows is set dynamically.
+        legend :
+            Whether and how to draw the plot legend.
+
+            - "auto" will draw the legend unless it would be too large
+            - "on" forces the legend to be drawn
+            - "off" forces the legend to not be drawn
+            - "outside" forces the legend to be drawn next to the plot area
+            (instead of inside it)
+        fill_kwargs :
+            A list of dictionaries corresponding to each CI.
+        This tells the plotting function how to fill the interior of the CI.
+        See matplotlib documentation for the supported options.
+        line_kwargs :
+            A list of dictionaries correspondng to each CI's median.
+        See matplotlib documentation for the supported options.
+        time_format :
+            Controls the formatting of the time axis (the horizontal axis);
+            "auto" will use the format defined by the grouping of the `time` parameter,
+            "date" attempts to display calendar dates,
+            "day" attempts to display days numerically indexed from the start of the
+            simulation with the first day being 0.
+            If the system cannot convert to the requested time format, this argument
+            may be ignored.
+        title :
+            A title to draw on the plot.
+        to_file :
+            Specify a path to save the plot to a file instead of calling `plt.show()`.
+        transform :
+            Allows you to specify an arbitrary transform function for the source
+            dataframe before we plot it, e.g., to rescale the values.
+            The function will be called once per geo/quantity group -- once per line,
+            essentially -- with a dataframe that contains just the data for that group.
+            The dataframe given as the argument is the result of applying
+            all selections and the projection if specified.
+            You should return a dataframe with the same format, where the
+            values of the data column have been modified for your purposes.
+
+            Dataframe columns:
+
+            - "time": the time series column
+            - "geo": the node ID (same value per group)
+            - "quantity": the label of the quantity (same value per group)
+            - "value": the data column
+        """
+
         try:
             num_nodes = self.output.rume.scope.nodes
             nrows = ceil(num_nodes / ncols)
@@ -502,6 +650,70 @@ class PlotRendererFilter:
         to_file: str | Path | None = None,
         transform: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
     ):
+        """
+        Produces a histogram plot of a filter output. This is a plot where
+        a specific time instance is taken and plotted as a histogram.
+
+        Parameters
+        ----------
+        geo :
+            The geographic selection to make on the output data.
+        time :
+            The time selection to make on the output data. For
+            this plot the time selection must be a single time instant.
+            for instance you could use
+            'rume.time_frame.select.days(100, 100).group("day").agg()'
+            to create a histogram corresponding to a single day.
+        quantity :
+            The quantity selection to make on the output data.
+        sharex :
+            Whether or not the subplots should share the x-axis ticks.
+        ncols :
+            The number of columns in the resulting subplot matrix. The
+            number of rows is set dynamically.
+        hist_kwargs :
+            A list of keyword arguments to be passed to the matplotlib function
+            that draws the bin plot.
+            See matplotlib documentation for the supported options.
+        legend :
+            Whether and how to draw the plot legend.
+
+            - "auto" will draw the legend unless it would be too large
+            - "on" forces the legend to be drawn
+            - "off" forces the legend to not be drawn
+            - "outside" forces the legend to be drawn next to the plot area
+            (instead of inside it)
+        time_format :
+            Controls the formatting of the time axis (the horizontal axis);
+            "auto" will use the format defined by the grouping of the `time` parameter,
+            "date" attempts to display calendar dates,
+            "day" attempts to display days numerically indexed from the start of the
+            simulation with the first day being 0.
+            If the system cannot convert to the requested time format, this argument
+            may be ignored.
+        title :
+            A title to draw on the plot.
+        to_file :
+            Specify a path to save the plot to a file instead of calling `plt.show()`.
+        transform :
+            Allows you to specify an arbitrary transform function for the source
+            dataframe before we plot it, e.g., to rescale the values.
+            The function will be called once per geo/quantity group -- once per line,
+            essentially -- with a dataframe that contains just the data for that group.
+            The dataframe given as the argument is the result of applying
+            all selections and the projection if specified.
+            You should return a dataframe with the same format, where the
+            values of the data column have been modified for your purposes.
+
+            Dataframe columns:
+
+            - "time": the time series column
+            - "geo": the node ID (same value per group)
+            - "quantity": the label of the quantity (same value per group)
+            - "value": the data column
+        ```
+        """
+
         try:
             num_nodes = self.output.rume.scope.nodes
             nrows = ceil(num_nodes / ncols)
@@ -514,6 +726,9 @@ class PlotRendererFilter:
 
             if hist_kwargs is None:
                 hist_kwargs = [{}]
+
+            if transform is None:
+                transform = identity
 
             # Y-axis
             fig.supylabel("Density")
@@ -530,7 +745,14 @@ class PlotRendererFilter:
                 legend = "on" if len(quantity.labels) <= 4 else "off"
 
             self.histogram_plt(
-                axes, geo, time, quantity, legend, hist_kwargs, time_format
+                axes,
+                geo,
+                time,
+                quantity,
+                legend,
+                hist_kwargs,
+                time_format,
+                transform,  # type: ignore
             )
 
             if to_file is None:
@@ -552,6 +774,7 @@ class PlotRendererFilter:
         legend: LegendOption,
         hist_kwargs,
         time_format: TimeFormatOption,
+        transform: Callable[[pd.DataFrame], pd.DataFrame],
     ):
         realizations_agg = self.output.select.all()
         data_df = munge_pipeline_output(
@@ -580,7 +803,7 @@ class PlotRendererFilter:
 
             for quantity_name, kwargs in zip(quantity.labels, cycle(hist_kwargs)):
                 axes[plot_index].hist(
-                    gdf[quantity_name],
+                    transform(gdf[quantity_name].to_frame()),
                     label=f"Histogram of {quantity_name} at Time: {gdf['time'].iloc[0]}",
                     **kwargs,
                 )
@@ -595,7 +818,7 @@ class PlotRendererFilter:
 
     def line(
         self,
-        realization: RealizationSelection | RealizationAggregation,
+        realization: RealizationAggregation,
         geo: GeoSelection | GeoAggregation,
         time: TimeSelection | TimeAggregation,
         quantity: QuantitySelection | QuantityAggregation,
@@ -608,6 +831,77 @@ class PlotRendererFilter:
         to_file: str | Path | None = None,
         transform: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
     ) -> None:
+        """
+        Produces a line plot of a filter output. This is a plot where
+        a single line is plotted for each location in the GeoStrategy.
+
+        Parameters
+        ----------
+        realization :
+            A realization aggregation which returns some number of lines per
+        location in the GeoStrategy.
+        geo :
+            The geographic selection to make on the output data.
+        time :
+            The time selection to make on the output data.
+        quantity :
+            The quantity selection to make on the output data.
+        sharex :
+            Whether or not the subplots should share the x-axis ticks.
+        ncols :
+            The number of columns in the resulting subplot matrix. The
+        number of rows is set dynamically.
+        legend :
+            Whether and how to draw the plot legend.
+
+            - "auto" will draw the legend unless it would be too large
+            - "on" forces the legend to be drawn
+            - "off" forces the legend to not be drawn
+            - "outside" forces the legend to be drawn next to the plot area
+            (instead of inside it)
+        line_kwargs :
+            A list of keyword arguments to be passed to the matplotlib function
+            that draws each line. If the list contains less items than there are lines,
+            we will cycle through the list as many times as needed. Lines are drawn
+            in the order defined by the `ordering` parameter.
+            See matplotlib documentation for the supported options.
+        time_format :
+            Controls the formatting of the time axis (the horizontal axis);
+            "auto" will use the format defined by the grouping of the `time` parameter,
+            "date" attempts to display calendar dates,
+            "day" attempts to display days numerically indexed from the start of the
+            simulation with the first day being 0.
+            If the system cannot convert to the requested time format, this argument
+            may be ignored.
+        label_format :
+            A format for the items displayed in the legend;
+            the string will be used in a call to `format()`
+            with the replacement variables `{n}` for the name of the geo node,
+            `{q}` for the name of the quantity, and '{m}' for the aggregation name
+            corresponding to the realization aggregation.
+        title :
+            A title to draw on the plot.
+        to_file :
+            Specify a path to save the plot to a file instead of calling `plt.show()`.
+        transform :
+            Allows you to specify an arbitrary transform function for the source
+            dataframe before we plot it, e.g., to rescale the values.
+            The function will be called once per geo/quantity group -- once per line,
+            essentially -- with a dataframe that contains just the data for that group.
+            The dataframe given as the argument is the result of applying
+            all selections and the projection if specified.
+            You should return a dataframe with the same format, where the
+            values of the data column have been modified for your purposes.
+
+            Dataframe columns:
+
+            - "time": the time series column
+            - "geo": the node ID (same value per group)
+            - "quantity": the label of the quantity (same value per group)
+            - "value": the data column
+
+        """
+
         if not isinstance(realization, RealizationAggregation):
             raise ValueError("Line plots only support RealizationAggregation.")
 
